@@ -625,13 +625,16 @@ void updateConfiguration(WebServer &serverWeb, SystemConfigStruct &configSys, Ne
             serverWeb.send(HTTP_CODE_OK, contTypeText, "ok");
             if (configNet.wifiEnable)
             {
-                WiFi.persistent(false);
+                // Enable WiFi persistence to ensure automatic connection after reboot (STA mode only)
+                // Keep persistent(false) in AP mode to avoid saving AP configuration
                 if (vars.apStarted)
                 {
+                    WiFi.persistent(false);
                     WiFi.mode(WIFI_AP_STA);
                 }
                 else
                 {
+                    WiFi.persistent(true);
                     WiFi.mode(WIFI_STA);
                 }
                 WiFi.begin(configNet.wifiSsid, configNet.wifiPass);

@@ -161,13 +161,14 @@ void handleTmrNetworkOverseer()
   }
   if (networkCfg.wifiEnable)
   {
-    LOGD("WiFi.status = %s", String(WiFi.status()).c_str());
+    LOGD("WiFi.status = %s, Counter = %d", String(WiFi.status()).c_str(), networkOverseerCounter);
 
     if (WiFi.isConnected())
     {
       LOGD("WIFI CONNECTED");
-      // tmrNetworkOverseer.stop();
+      // Connection successful, stop monitor
       tmrNetworkOverseer.detach();
+      networkOverseerCounter = 0; // reset the counter
       if (!vars.firstUpdCheck)
       {
         firstUpdCheck();
@@ -177,11 +178,31 @@ void handleTmrNetworkOverseer()
     {
       if (!vars.zbFlashing)
       {
+        // More aggressive reconnection attempts: Try once every 3 checks (15 seconds) instead of waiting 60 seconds
+        if (networkOverseerCounter > 3)
+        {
+          LOGD("WiFi not connected, attempting reconnect (attempt %d)", networkOverseerCounter / 3);
+          // Try reconnecting once every 3 checks
+          if (networkOverseerCounter % 3 == 0)
+          {
+            connectWifi();
+          }
+        }
+        // If multiple reconnection attempts fail (exceeding the maximum number of retries), activate AP mode
         if (networkOverseerCounter > overseerMaxRetry)
         {
-          LOGD("WIFI counter overflow");
-          startAP(true);
+          // If already in AP mode, no need to restart.
+          if (!vars.apStarted)
+          {
+            LOGD("WIFI counter overflow, starting AP mode");
+            startAP(true);
+          }
+          else
+          {
+            LOGD("WIFI counter overflow, AP mode already active");
+          }        
           connectWifi();
+          networkOverseerCounter = 0; // reset the counter
         }
       }
     }
@@ -207,8 +228,16 @@ void handleTmrNetworkOverseer()
       // if (tmrNetworkOverseer.counter() > overseerMaxRetry)
       if (networkOverseerCounter > overseerMaxRetry)
       {
-        LOGD("LAN counter overflow!");
-        startAP(true);
+        // If already in AP mode, no need to restart.
+        if (!vars.apStarted)
+        {
+          LOGD("LAN counter overflow, starting AP mode");
+          startAP(true);
+        }
+        else
+        {
+          LOGD("LAN counter overflow, AP mode already active");
+        }        
       }
     }
   }
@@ -245,6 +274,7 @@ void handleTmrNetworkOverseer()
   //}
 }
 
+static bool connectedWifi = false;
 void NetworkEvent(WiFiEvent_t event)
 {
   const char *wifiKey = "WiFi";
@@ -271,6 +301,18 @@ void NetworkEvent(WiFiEvent_t event)
          ETH.linkSpeed());
 
     vars.connectedEther = true;
+    // If MQTT is enabled but not connected, try connecting.
+    if (mqttCfg.enable && !vars.mqttConn)
+    {
+      LOGD("Ethernet connected, attempting MQTT connection");
+      connectToMqtt();
+    }
+    
+    if(systemCfg.workMode == WORK_MODE_NETWORK)
+    {
+      ledControl.statusLED.mode = LED_OFF;
+      ledControl.powerLED.mode = LED_BLINK_1Hz;
+    }
     // checkDNS(true);
     //  ConfigSettings.disconnectEthTime = 0;
     break;
@@ -315,7 +357,20 @@ void NetworkEvent(WiFiEvent_t event)
          WiFi.dnsIP().toString().c_str());
     // checkDNS(true);
     LOGD("WiFi TX %s", String(WiFi.getTxPower()).c_str());
+    connectedWifi = true;
 
+    // If MQTT is enabled but not connected, try connecting.
+    if (mqttCfg.enable && !vars.mqttConn)
+    {
+      LOGD("WiFi connected, attempting MQTT connection");
+      connectToMqtt();
+    }
+    
+    if(systemCfg.workMode == WORK_MODE_NETWORK)
+    {
+      ledControl.statusLED.mode = LED_OFF;
+      ledControl.powerLED.mode = LED_BLINK_1Hz;
+    }
     /*result5 = esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
     if (result5 == ESP_OK)
     {
@@ -343,10 +398,32 @@ void NetworkEvent(WiFiEvent_t event)
   case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: // SYSTEM_EVENT_STA_DISCONNECTED:
     LOGD("%s STA DISCONNECTED", wifiKey);
     // if (tmrNetworkOverseer.state() == STOPPED)
+    connectedWifi = false;
+    
+    // If WiFi is enabled, attempt to reconnect immediately (without waiting for the timer).
+    if (networkCfg.wifiEnable && !vars.zbFlashing)
+    {
+      LOGD("WiFi disconnected, attempting immediate reconnect");
+      //Reset the counter to retry immediately
+      networkOverseerCounter = 0;
+      // Try reconnecting after a short delay to avoid potential problems with immediate reconnection.
+      delay(100);
+      connectWifi();
+    }
+    
+    // Start the network monitor to continuously check the connection status
     if (!tmrNetworkOverseer.active())
     {
       // tmrNetworkOverseer.start();
       tmrNetworkOverseer.attach(overseerInterval, handleTmrNetworkOverseer);
+    }
+    if(systemCfg.workMode == WORK_MODE_NETWORK)
+    {
+      if((connectedWifi == false) && (vars.connectedEther == false))
+      {
+        ledControl.powerLED.mode = LED_OFF;
+        ledControl.statusLED.mode = LED_ON;
+      }
     }
     break;
   default:
@@ -418,7 +495,17 @@ void connectWifi()
     timeout = 0;
     LOGD("timeout");
   }
-  WiFi.persistent(false);
+  
+  // Enable WiFi persistence to ensure automatic connection after reboot (STA mode only)\
+  // Keep persistent (false) in AP mode to avoid saving AP configuration
+  if (!vars.apStarted)
+  {
+    WiFi.persistent(true);
+  }
+  else
+  {
+    WiFi.persistent(false);
+  }
 
   // Dont work on Arduino framework
 
@@ -1068,17 +1155,32 @@ void loop(void)
       {
         if (client[cln])
         {
-          socketClientConnected(cln, client[cln].remoteIP());
-          while (client[cln].available())
-          { // read from LAN
-            net_buf[net_bytes_read] = client[cln].read();
-            if (net_bytes_read < BUFFER_SIZE - 1)
-              net_bytes_read++;
-          } // send to Zigbee
-          Serial2.write(net_buf, net_bytes_read);
-          // print to web console
-          printRecvSocket(net_bytes_read, net_buf);
-          net_bytes_read = 0;
+          // Check if the client is still connected
+          if (client[cln].connected())
+          {
+            socketClientConnected(cln, client[cln].remoteIP());
+            while (client[cln].available())
+            { // read from LAN
+              net_buf[net_bytes_read] = client[cln].read();
+              if (net_bytes_read < BUFFER_SIZE - 1)
+                net_bytes_read++;
+            } // send to Zigbee
+            if((net_bytes_read > 0) && (net_bytes_read < 0xff))
+            {
+              Serial2.write(net_buf, net_bytes_read);
+              // print to web console
+              printRecvSocket(net_bytes_read, net_buf);
+              net_bytes_read = 0;
+            }
+          }
+          else
+          {
+            // The client object exists but has been disconnected and needs to be cleaned up.
+            LOGD("Client %d disconnected, cleaning up", cln);
+            client[cln].stop();
+            socketClientDisconnected(cln);
+            client[cln] = WiFiClient(); // Reset client object
+          }
         }
         else
         {

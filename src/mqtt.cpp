@@ -454,8 +454,33 @@ void connectToMqtt()
 {
     if (!vars.zbFlashing)
     {
-        LOGD("Connecting...");
-        mqttClient.connect();
+        // Check network connection status
+        bool networkReady = false;
+        if (networkCfg.wifiEnable && WiFi.isConnected())
+        {
+            networkReady = true;
+            LOGD("WiFi connected, network ready for MQTT");
+        }
+        else if (networkCfg.ethEnable && vars.connectedEther)
+        {
+            networkReady = true;
+            LOGD("Ethernet connected, network ready for MQTT");
+        }
+        
+        if (networkReady)
+        {
+            LOGD("Connecting to MQTT...");
+            mqttClient.connect();
+        }
+        else
+        {
+            LOGD("Network not ready, MQTT connection delayed");
+            // If a reconnection timer exists, start it so that it can retry later.
+            if (mqttReconnectTimer != NULL)
+            {
+                xTimerStart(mqttReconnectTimer, 0);
+            }
+        }
     }
     else
     {

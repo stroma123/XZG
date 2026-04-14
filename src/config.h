@@ -399,6 +399,7 @@ struct LEDControl
 {
   LEDSettings modeLED;
   LEDSettings powerLED;
+  LEDSettings statusLED;
 };
 
 enum usbMode : uint8_t

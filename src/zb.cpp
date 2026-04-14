@@ -156,30 +156,54 @@ void flashZbUrl(String url)
 
     freeHeapPrint();
     delay(250);
+
+    // Conditional WiFi shutdown:
+    // If both Ethernet and WiFi are connected, disconnect WiFi to free up memory.
+    // If only WiFi or only Ethernet is connected, keep the connection open.
     if (networkCfg.wifiEnable)
     {
-        stopWifi();
+        if (vars.connectedEther)
+        {
+            // Connect to both Ethernet and WiFi, then stop WiFi to free up memory.
+            LOGD("Both Ethernet and WiFi connected, stopping WiFi to free memory");
+            stopWifi();
+        }
+        else
+        {
+            // Only a WiFi connection is required; keep WiFi running so that the web server and HTTPClient can function properly.
+            LOGD("Only WiFi connected, keeping WiFi for web server and HTTPClient");
+        }
     }
+
     if (mqttCfg.enable)
     {
         mqttDisconnectCleanup();
     }
+    
+    // Clean up memory
+    heap_caps_free(NULL);
+  
     freeHeapPrint();
     delay(250);
 
     float last_percent = 0;
 
     const uint8_t eventLen = 11;
+    // Use a static buffer to store the progress string to avoid frequently creating String objects.
+    static char percentStr[16];
 
-    auto progressShow = [last_percent](float percent) mutable
+    auto progressShow = [&last_percent](float percent) mutable
     {
-        if ((percent - last_percent) > 1 || percent < 0.1 || percent == 100)
+        // Update every 5% to reduce the frequency of sendEvent calls.
+        if ((percent - last_percent) > 5.0 || percent < 0.1 || percent == 100)
         {
             // char buffer[100];
             // snprintf(buffer, sizeof(buffer), "Flash progress: %.2f%%", percent);
             // printLogMsg(String(buffer));
             LOGI("%.2f%%", percent);
-            sendEvent(tagZB_FW_prgs, eventLen, String(percent));
+            // Use snprintf instead of the String constructor to reduce memory allocation.
+            snprintf(percentStr, sizeof(percentStr), "%.2f", percent);
+            sendEvent(tagZB_FW_prgs, eventLen, String(percentStr));
             last_percent = percent;
         }
     };
@@ -198,7 +222,10 @@ void flashZbUrl(String url)
     // printLogMsg("Baud " + baud_str);
     systemCfg.serialSpeed = baud_str.toInt();
 
-    printLogMsg("ZB flash " + clear_url + " @ " + systemCfg.serialSpeed);
+    // Optimize log output and reduce string concatenation.
+    char logMsg[256];
+    snprintf(logMsg, sizeof(logMsg), "ZB flash %s @ %d", clear_url.c_str(), systemCfg.serialSpeed);
+    printLogMsg(logMsg);
 
     sendEvent(tagZB_FW_file, eventLen, String(clear_url));
 
@@ -285,7 +312,14 @@ void flashZbUrl(String url)
     {
         Serial2.updateBaudRate(systemCfg.serialSpeed);
         printLogMsg("Failed to flash Zigbee");
+
+        // Send error event
         sendEvent(tagZB_FW_err, eventLen, String("Failed!"));
+        
+        // Immediately address the web server issue to ensure events are sent to the front end.
+        webServerHandleClient();
+        delay(100);  // Give the event some time to send.
+        webServerHandleClient();
     }
     ledControl.modeLED.mode = LED_OFF;
     vars.zbFlashing = false;
@@ -313,32 +347,71 @@ void flashZbUrl(String url)
     LOGD("Buffer content:\n%s", hexOutput.c_str());
 }*/
 
+// Use static buffers to avoid allocating large buffers on the stack.
+static byte flashBuffer[CCTools::TRANSFER_SIZE];
+
 bool eraseWriteZbUrl(const char *url, std::function<void(float)> progressShow, CCTools &CCTool)
 {
     HTTPClient http;
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    // Optimize HTTPClient configuration to reduce memory usage.
+    http.setTimeout(30000); // 30-second timeout
+    http.setReuse(false);   // Do not reuse connections, release resources
 
     int loadedSize = 0;
     int totalSize = 0;
-    const int maxRetries = 7;
+    const int maxRetries = 3;   //Reduce from 7 to 3, reducing the number of retries.
     int retryCount = 0;
     const int retryDelay = 500;
     bool isSuccess = false;
+    bool flashErased = false;  // Flag: Has the Flash memory been erased? Avoid repeated erasing.
 
     while (retryCount < maxRetries && !isSuccess)
     {
+        // Check memory; if memory is insufficient, fail prematurely.
+        size_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+        if (freeHeap < 10*1024)  // If less than 10KB of memory is available, fail immediately.
+        {
+            LOGW("Critical low memory during flash: %d bytes, aborting", freeHeap);
+            printLogMsg("OTA failed: Insufficient memory");
+            sendEvent(tagZB_FW_err, 11, String("Insufficient memory"));
+            webServerHandleClient();
+            delay(100);
+            webServerHandleClient();
+            http.end();
+            CCTool.restart();
+            return false; // Return early and do not retry
+        }
+
         if (!dnsLookup(url))
         {
-            retryCount += 3;
-            delay(retryDelay * 3);
+            retryCount++;
+            // If it fails early (the first two times), return quickly.
+            if (retryCount >= 2)
+            {
+                LOGW("DNS lookup failed after %d retries, aborting", retryCount);
+                printLogMsg("OTA failed: DNS lookup failed");
+                sendEvent(tagZB_FW_err, 11, String("DNS lookup failed"));
+                webServerHandleClient();
+                delay(100);
+                webServerHandleClient();
+                http.end();
+                CCTool.restart();
+                return false; // Return early and do not retry
+            }
+            delay(retryDelay);
+            // Ensure the web server can handle events so that the front end can receive error messages promptly.
+            webServerHandleClient();
             continue;
         }
 
-        if (loadedSize == 0)
+        // Erase only the first time or when you need to start over, to avoid repeated erasing.
+        if (loadedSize == 0 && !flashErased)
         {
             CCTool.eraseFlash();
             sendEvent("ZB_FW_info", 11, String("erase"));
             printLogMsg("Erase completed!");
+            flashErased = true;
         }
 
         http.begin(url);
@@ -346,7 +419,10 @@ bool eraseWriteZbUrl(const char *url, std::function<void(float)> progressShow, C
 
         if (loadedSize > 0)
         {
-            http.addHeader("Range", "bytes=" + String(loadedSize) + "-");
+            // Use character arrays instead of Strings to reduce memory allocation.
+            char rangeHeader[32];
+            snprintf(rangeHeader, sizeof(rangeHeader), "bytes=%d-", loadedSize);
+            http.addHeader("Range", rangeHeader);
         }
 
         int httpCode = http.GET();
@@ -359,7 +435,23 @@ bool eraseWriteZbUrl(const char *url, std::function<void(float)> progressShow, C
 
             http.end();
             retryCount++;
+            
+            // If it fails early (the first two times), return quickly.
+            if (retryCount >= 2)
+            {
+                LOGW("HTTP error persists after %d retries, aborting", retryCount);
+                printLogMsg("OTA failed: Network error");
+                sendEvent(tagZB_FW_err, 11, String("Network error"));
+                webServerHandleClient();
+                delay(100);
+                webServerHandleClient();
+                CCTool.restart();
+                return false; // Return early
+            }
+   
             delay(retryDelay);
+            // Ensure the web server can handle events so that the front end can receive error messages promptly.
+            webServerHandleClient();
             continue;
         }
 
@@ -375,34 +467,69 @@ bool eraseWriteZbUrl(const char *url, std::function<void(float)> progressShow, C
                 http.end();
                 printLogMsg("Error initializing flash process");
                 retryCount++;
+                
+                // If it fails early (the first two times), return quickly.
+                if (retryCount >= 2)
+                {
+                    LOGW("Flash init failed after %d retries, aborting", retryCount);
+                    printLogMsg("OTA failed: Flash init error");
+                    sendEvent(tagZB_FW_err, 11, String("Flash init error"));
+                    webServerHandleClient();
+                    delay(100);
+                    webServerHandleClient();
+                    CCTool.restart();
+                    return false; // Return early
+                }
+  
                 delay(retryDelay);
+                // Ensure the web server can handle events so that the front end can receive error messages promptly.
+                webServerHandleClient();
                 continue;
             }
             printLogMsg("Begin flash");
         }
 
-        byte buffer[CCTool.TRANSFER_SIZE];
+        // Use a static buffer instead of allocating on the stack.
         WiFiClient *stream = http.getStreamPtr();
         static int callCounter = 0;
+        static int webServerCallCounter = 0;
 
         while (http.connected() && loadedSize < totalSize)
         {
             size_t size = stream->available();
             if (size > 0)
             {
-                int c = stream->readBytes(buffer, std::min(size, sizeof(buffer)));
+                int c = stream->readBytes(flashBuffer, std::min(size, sizeof(flashBuffer)));
                 if (c <= 0)
                 {
                     printLogMsg("Failed to read data from stream");
                     break;
                 }
 
-                if (!CCTool.processFlash(buffer, c))
+                if (!CCTool.processFlash(flashBuffer, c))
                 {
                     printLogMsg("Failed to process flash data");
                     loadedSize = 0;
                     retryCount++;
+                    
+                    // If it fails early (the first two times), return quickly.
+                    if (retryCount >= 2)
+                    {
+                        LOGW("Flash process failed after %d retries, aborting", retryCount);
+                        printLogMsg("OTA failed: Flash process error");
+                        sendEvent(tagZB_FW_err, 11, String("Flash process error"));
+                        webServerHandleClient();
+                        delay(100);
+                        webServerHandleClient();
+                        stream->stop();
+                        http.end();
+                        CCTool.restart();
+                        return false; // Return early
+                    }
+    
                     delay(retryDelay);
+                    // Ensure the web server can handle events so that the front end can receive error messages promptly.
+                    webServerHandleClient();
                     break;
                 }
 
@@ -413,14 +540,43 @@ bool eraseWriteZbUrl(const char *url, std::function<void(float)> progressShow, C
 
             esp_task_wdt_reset(); // Reset watchdog
             delay(10); // Yield to the WiFi stack
-                       
-            callCounter++;
 
-            if (callCounter % 500 == 0)
+            callCounter++;
+            webServerCallCounter++;
+
+            // Check memory more frequently (approximately 1 second every 100 loops).
+            if (callCounter % 100 == 0)
             {
+                size_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+                
+                // If less than 10KB of memory is available, fail immediately.
+                if (freeHeap < 10*1024)
+                {
+                    LOGW("Critical low memory during flash: %d bytes, aborting", freeHeap);
+                    printLogMsg("OTA failed: Insufficient memory");
+                    sendEvent(tagZB_FW_err, 11, String("Insufficient memory"));
+                    webServerHandleClient();
+                    delay(100);
+                    webServerHandleClient();
+                    stream->stop();
+                    http.end();
+                    CCTool.restart();
+                    return false; // Returning early and not continuing.
+                }
+                else if (freeHeap < 20*1024)  // Log a warning if less than 20KB of memory is available.
+                {
+                    LOGW("Low memory during flash: %d bytes", freeHeap);
+                }
                 freeHeapPrint();
                 delay(10);
                 callCounter = 0;
+            }
+
+            // Periodically call webServerHandleClient to ensure the web server can handle events (approximately 0.5 seconds every 50 loops).
+            if (webServerCallCounter % 50 == 0)
+            {
+                webServerHandleClient();
+                webServerCallCounter = 0;
             }
         }
 
@@ -431,6 +587,18 @@ bool eraseWriteZbUrl(const char *url, std::function<void(float)> progressShow, C
         {
             isSuccess = true;
         }
+    }
+
+    // If it fails, immediately send an error event and notify the user.
+    if (!isSuccess)
+    {
+        // Send an error event to notify the user of the failure.
+        printLogMsg("OTA failed after all retries");
+        sendEvent(tagZB_FW_err, 11, String("OTA failed"));
+        // Ensure the web server can handle events so that the front end can receive error messages promptly.
+        webServerHandleClient();
+        delay(100);
+        webServerHandleClient();
     }
 
     http.end();
