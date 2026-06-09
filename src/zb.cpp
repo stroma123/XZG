@@ -40,25 +40,35 @@ extern CCTools CCTool;
 
 bool zbFwCheck()
 {
-    const int maxAttempts = 3;
-    for (int attempt = 0; attempt < maxAttempts; attempt++)
+    if (systemCfg.zbRole == COORDINATOR)
     {
-        LOGD("Try: %d", attempt + 1);
-        delay(500 * (attempt * 2));
-        if (CCTool.checkFirmwareVersion())
+        const int maxAttempts = 3;
+        for (int attempt = 0; attempt < maxAttempts; attempt++)
         {
-            printLogMsg(tag_ZB + " FW: " + String(CCTool.chip.fwRev));
-            if (systemCfg.zbRole == UNDEFINED)
+            LOGD("Try: %d", attempt + 1);
+            delay(500 * (attempt * 2));
+            if (CCTool.checkFirmwareVersion())
             {
-                systemCfg.zbRole = COORDINATOR;
-                saveSystemConfig(systemCfg);
+                printLogMsg(tag_ZB + " FW: " + String(CCTool.chip.fwRev));
+                // if (systemCfg.zbRole == UNDEFINED)
+                // {
+                //     systemCfg.zbRole = COORDINATOR;
+                //     saveSystemConfig(systemCfg);
+                // }
+                return true;
             }
-            return true;
+            else
+            {
+                CCTool.restart();
+            }
         }
-        else
-        {
-            CCTool.restart();
-        }
+    }
+    else if((systemCfg.zbSaveinfo) and (strlen(systemCfg.zbFw) > 5))
+    {
+        /* only coordinator has FW check function in case of router/openthread FW - return
+           version stored in system config at programming time */
+        printLogMsg(tag_ZB + " FW: " + String(systemCfg.zbFw));
+        return true;
     }
     printLogMsg(tag_ZB + " FW: Unknown! Check serial speed!");
     return false;
@@ -281,7 +291,7 @@ void flashZbUrl(String url)
             {
                 systemCfg.zbRole = ROUTER;
             }
-            else if (zbRole.indexOf("tread") > -1)
+            else if (zbRole.indexOf("thread") > -1)
             {
                 systemCfg.zbRole = OPENTHREAD;
             }
@@ -290,20 +300,20 @@ void flashZbUrl(String url)
                 systemCfg.zbRole = UNDEFINED;
             }
             zbRole = "";
-
+            // systemCfg.zbSaveinfo = false;
             saveSystemConfig(systemCfg);
         }
         else
         {
             LOGW("URL error");
         }
-        if (systemCfg.zbRole == COORDINATOR)
-        {
-            zbFwCheck();
-            // zbLedToggle();
-            // delay(1000);
-            // zbLedToggle();
-        }
+        // if (systemCfg.zbRole == COORDINATOR)
+        // {
+        //     zbFwCheck();
+        //     // zbLedToggle();
+        //     // delay(1000);
+        //     // zbLedToggle();
+        // }
         sendEvent(tagZB_FW_file, eventLen, String(systemCfg.zbFw));
         delay(500);
         restartDevice();
@@ -816,46 +826,507 @@ bool eraseWriteZbUrl(const char *url, std::function<void(float)> progressShow, C
 
 #include <FS.h>
 #include <LittleFS.h>
-/*
+
+String extractChipModelFromFilename(const char *filePath)
+{
+    String fileName = String(filePath);
+    
+    // Extract filenames from path
+    int lastSlash = fileName.lastIndexOf('/');
+    if (lastSlash >= 0)
+    {
+        fileName = fileName.substring(lastSlash + 1);
+    }
+    
+    // Convert to uppercase for comparison
+    fileName.toUpperCase();
+    
+    // Check common chip model patterns
+    // Both CC1352P7 and CC2652P7 are mapped to CC2652P7.
+    if (fileName.indexOf("CC2652P7") >= 0 || fileName.indexOf("CC1352P7") >= 0)
+    {
+        return "CC2652P7";
+    }
+    // Both CC1352P2 and CC2652P2 are mapped to CC2652P2.
+    else if (fileName.indexOf("CC2652P2") >= 0 || fileName.indexOf("CC1352P2") >= 0)
+    {
+        return "CC2652P2";
+    }
+    else if (fileName.indexOf("CC2652RB") >= 0)
+    {
+        return "CC2652RB";
+    }
+    else if (fileName.indexOf("CC2652") >= 0 || fileName.indexOf("CC1352") >= 0)
+    {
+        // If only CC2652 or CC1352 is available, try a more precise match.
+        // Check for clear markings for P2 or P7.
+        if (fileName.indexOf("P2") >= 0)
+        {
+            return "CC2652P2";
+        }
+        else if (fileName.indexOf("P7") >= 0)
+        {
+            return "CC2652P7";
+        }
+        // If no explicit identifier is specified, return the general CC2652.
+        return "CC2652";
+    }
+    
+    // If it cannot be extracted from the filename, return an empty string.
+    return "";
+}
+
+bool validateChipModel(const char *filePath, const char *currentChipModel)
+{
+    String firmwareChipModel = extractChipModelFromFilename(filePath);
+    
+    // Check if the current chip model cannot be obtained.
+    bool currentChipUnknown = (!currentChipModel || strlen(currentChipModel) == 0);
+    
+    // Scenario 1: If the chip model cannot be detected, but the firmware file name is clear, upgrade is allowed.
+    if (currentChipUnknown && firmwareChipModel.length() > 0)
+    {
+        LOGW("Cannot detect current chip model, but firmware filename contains chip model: %s, allowing upgrade", firmwareChipModel.c_str());
+        return true;
+    }
+    
+    // Scenario 2: If the firmware filename does not contain the chip model, the upgrade is not allowed.
+    if (firmwareChipModel.length() == 0)
+    {
+        if (currentChipUnknown)
+        {
+            LOGW("Cannot detect current chip model and cannot extract chip model from filename, blocking upgrade");
+        }
+        else
+        {
+            LOGW("Cannot extract chip model from filename, blocking upgrade");
+        }
+        return false;
+    }
+    
+    // Scenario 3: If both have values, perform a strict matching check.
+    String currentChip = String(currentChipModel);
+    currentChip.toUpperCase();
+    
+    // Exact match (primary check)）
+    if (firmwareChipModel == currentChip)
+    {
+        return true;
+    }
+    
+    // Handling variants of CC2652P2 (launchpad/other)
+    // The current chip is a variant of the CC2652P2, and the firmware is CC2652P2.
+    if (currentChip.indexOf("CC2652P2") >= 0 && firmwareChipModel == "CC2652P2")
+    {
+        return true;
+    }
+    // The current chip is CC2652P2, and the firmware is a variant of CC2652P2.
+    if (currentChip == "CC2652P2" && firmwareChipModel.indexOf("CC2652P2") >= 0)
+    {
+        return true;
+    }
+    
+    // Handling variants of CC2652P7 (if any).
+    if (currentChip.indexOf("CC2652P7") >= 0 && firmwareChipModel == "CC2652P7")
+    {
+        return true;
+    }
+    if (currentChip == "CC2652P7" && firmwareChipModel.indexOf("CC2652P7") >= 0)
+    {
+        return true;
+    }
+    
+    // The general CC2652 firmware can be used with P2 or P7 (backward compatible).
+    // However, the firmware for P2 and P7 is not interchangeable.
+    if (firmwareChipModel == "CC2652" && (currentChip.indexOf("CC2652P2") >= 0 || currentChip.indexOf("CC2652P7") >= 0))
+    {
+        LOGW("Firmware chip model is generic CC2652, allowing upgrade");
+        return true;
+    }
+    
+    // In all other cases, upgrading between P2 and P7 is not allowed (including upgrading each other).
+    return false;
+}
+
 bool eraseWriteZbFile(const char *filePath, std::function<void(float)> progressShow, CCTools &CCTool)
 {
     File file = LittleFS.open(filePath, "r");
     if (!file)
     {
         char buffer[100];
-        snprintf(buffer, sizeof(buffer), "Failed to open file: %s\n", filePath);
+        snprintf(buffer, sizeof(buffer), "Failed to open file: %s", filePath);
         printLogMsg(buffer);
         return false;
     }
 
-    CCTool.eraseFlash();
-    printLogMsg("Erase completed!");
-
     int totalSize = file.size();
-
-    if (!CCTool.beginFlash(BEGIN_ZB_ADDR, totalSize))
+    if (totalSize <= 0)
     {
+        printLogMsg("Invalid file size");
         file.close();
         return false;
     }
 
-    byte buffer[CCTool.TRANSFER_SIZE];
+    // Erase Flash
+    if (!CCTool.eraseFlash())
+    {
+        printLogMsg("Failed to erase flash");
+        file.close();
+        return false;
+    }
+    sendEvent(tagZB_FW_info, 11, String("erase"));
+    printLogMsg("Erase completed!");
+
+    // Initialize Flash writing
+    if (!CCTool.beginFlash(BEGIN_ZB_ADDR, totalSize))
+    {
+        printLogMsg("Error initializing flash process");
+        file.close();
+        return false;
+    }
+    printLogMsg("Begin flash");
+
+    // Use static buffers to avoid allocating large buffers on the stack.
+    static byte flashBuffer[CCTools::TRANSFER_SIZE];
     int loadedSize = 0;
+    static int callCounter = 0;
+    static int webServerCallCounter = 0;
 
     while (file.available() && loadedSize < totalSize)
     {
+        // Check memory
+        size_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+        if (freeHeap < 10000)
+        {
+            LOGW("Critical low memory during flash: %d bytes, aborting", freeHeap);
+            printLogMsg("Flash failed: Insufficient memory");
+            sendEvent(tagZB_FW_err, 11, String("Insufficient memory"));
+            webServerHandleClient();
+            delay(100);
+            webServerHandleClient();
+            file.close();
+            CCTool.restart();
+            return false;
+        }
+
         size_t size = file.available();
-        int c = file.readBytes(reinterpret_cast<char *>(buffer), std::min(size, sizeof(buffer)));
-        // printBufferAsHex(buffer, c);
-        CCTool.processFlash(buffer, c);
+        int c = file.readBytes(reinterpret_cast<char *>(flashBuffer), std::min(size, sizeof(flashBuffer)));
+        
+        if (c <= 0)
+        {
+            printLogMsg("Failed to read data from file");
+            break;
+        }
+
+        if (!CCTool.processFlash(flashBuffer, c))
+        {
+            printLogMsg("Failed to process flash data");
+            file.close();
+            CCTool.restart();
+            return false;
+        }
+
         loadedSize += c;
         float percent = static_cast<float>(loadedSize) / totalSize * 100.0f;
         progressShow(percent);
-        delay(1); // Yield to allow other processes
+
+        esp_task_wdt_reset(); // Reset watchdog
+        delay(10); // Yield to allow other processes
+
+        callCounter++;
+        webServerCallCounter++;
+
+        // Regularly check memory (every 100 cycles).
+        if (callCounter % 100 == 0)
+        {
+            freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+            if (freeHeap < 10000)
+            {
+                LOGW("Critical low memory during flash: %d bytes, aborting", freeHeap);
+                printLogMsg("Flash failed: Insufficient memory");
+                sendEvent(tagZB_FW_err, 11, String("Insufficient memory"));
+                webServerHandleClient();
+                delay(100);
+                webServerHandleClient();
+                file.close();
+                CCTool.restart();
+                return false;
+            }
+            callCounter = 0;
+        }
+
+        // Periodically call webServerHandleClient (every 50 times in a loop).
+        if (webServerCallCounter % 50 == 0)
+        {
+            webServerHandleClient();
+            webServerCallCounter = 0;
+        }
     }
 
     file.close();
     CCTool.restart();
-    return true;
+    
+    if (loadedSize >= totalSize)
+    {
+        return true;
+    }
+    else
+    {
+        printLogMsg("Flash incomplete");
+        return false;
+    }
 }
-*/
+
+void flashZbFile(const char *filePath, const char *originalFilename)
+{
+    // Verify chip model - Verify using original filename
+    const char *filenameForValidation = (originalFilename && strlen(originalFilename) > 0) ? originalFilename : filePath;
+    const char *currentChipModel = CCTool.chip.hwRev.c_str();
+    if (strlen(currentChipModel) == 0)
+    {
+        // If the current chip model is unknown, use the saved model.
+        currentChipModel = systemCfg.zbHw;
+    }
+    
+    LOGD("Validating chip model - filePath: %s, originalFilename: %s, currentChip: %s", 
+         filePath, originalFilename ? originalFilename : "null", currentChipModel);
+    
+    if (!validateChipModel(filenameForValidation, currentChipModel))
+    {
+        String firmwareChipModel = extractChipModelFromFilename(filenameForValidation);
+        char errorMsg[256];
+        snprintf(errorMsg, sizeof(errorMsg), 
+                 "Chip model mismatch! Current: %s, Firmware: %s", 
+                 currentChipModel, firmwareChipModel.c_str());
+        
+        printLogMsg(errorMsg);
+        LOGD("Chip model validation failed: %s", errorMsg);
+        
+        // First, send an error status message to let the front end know that the upgrade failed.
+        sendEvent(tagZB_FW_info, 11, String("error"));
+        webServerHandleClient();
+        delay(50);
+        
+        // Send a formatted error message, which the frontend can parse and display.
+        String errorEvent = String("Chip model mismatch: Current=") + String(currentChipModel) + 
+                          String(", Firmware=") + firmwareChipModel;
+        sendEvent(tagZB_FW_err, 11, errorEvent);
+        
+        // The web server is processed multiple times to ensure that events are sent to the front end.
+        for (int i = 0; i < 10; i++)
+        {
+            webServerHandleClient();
+            delay(50);
+        }
+        
+        vars.zbFlashing = false;
+        ledControl.modeLED.mode = LED_OFF;
+        return;
+    }
+    
+    ledControl.modeLED.mode = LED_BLINK_3Hz;
+    vars.zbFlashing = true;
+
+    Serial2.updateBaudRate(500000);
+
+    freeHeapPrint();
+    delay(250);
+    
+    // Conditional stop WiFi
+    if (networkCfg.wifiEnable)
+    {
+        if (vars.connectedEther)
+        {
+            LOGD("Both Ethernet and WiFi connected, stopping WiFi to free memory");
+            stopWifi();
+        }
+        else
+        {
+            LOGD("Only WiFi connected, keeping WiFi for web server");
+        }
+    }
+    
+    if (mqttCfg.enable)
+    {
+        mqttDisconnectCleanup();
+    }
+    
+    // Clean up memory
+    heap_caps_free(NULL);
+    
+    freeHeapPrint();
+    delay(250);
+
+    float last_percent = 0;
+
+    const uint8_t eventLen = 11;
+    static char percentStr[16];
+
+    auto progressShow = [&last_percent](float percent) mutable
+    {
+        // Update every 5% to reduce the frequency of sendEvent calls.
+        if ((percent - last_percent) > 5.0 || percent < 0.1 || percent == 100)
+        {
+            LOGI("%.2f%%", percent);
+            snprintf(percentStr, sizeof(percentStr), "%.2f", percent);
+            sendEvent(tagZB_FW_prgs, eventLen, String(percentStr));
+            last_percent = percent;
+        }
+    };
+
+    printLogMsg("Start Zigbee flashing from file");
+    sendEvent(tagZB_FW_info, eventLen, String("start"));
+
+    char logMsg[256];
+    snprintf(logMsg, sizeof(logMsg), "ZB flash from file: %s", filePath);
+    printLogMsg(logMsg);
+
+    sendEvent(tagZB_FW_file, eventLen, String(filePath));
+
+    if (eraseWriteZbFile(filePath, progressShow, CCTool))
+    {
+        sendEvent(tagZB_FW_info, eventLen, String("finish"));
+        printLogMsg("Flashed successfully");
+        
+        // Extract device type and set baud rate from filename
+        String filenameForExtraction = (originalFilename && strlen(originalFilename) > 0) ? String(originalFilename) : String(filePath);
+        String filenameUpper = filenameForExtraction;
+        filenameUpper.toUpperCase();  // Convert to uppercase for case-insensitive matching
+        
+        // Extract device type (case-sensitive)
+        bool deviceTypeDetected = false;
+        
+        if (filenameUpper.indexOf("COORDINATOR") >= 0)
+        {
+            systemCfg.zbRole = COORDINATOR;
+            systemCfg.serialSpeed = 115200;  // coordinator default value is 115200
+            deviceTypeDetected = true;
+            LOGD("Detected device type: COORDINATOR, baud rate: 115200");
+        }
+        else if (filenameUpper.indexOf("ROUTER") >= 0)
+        {
+            systemCfg.zbRole = ROUTER;
+            systemCfg.serialSpeed = 115200;  // Router default 115200
+            deviceTypeDetected = true;
+            LOGD("Detected device type: ROUTER, baud rate: 115200");
+        }
+        else if (filenameUpper.indexOf("THREAD") >= 0 || filenameUpper.indexOf("_RCP_") >= 0 || filenameUpper.indexOf("_RCP.") >= 0)
+        {
+            // Both thread and rcp are mapped to OpenHREAD, with a baud rate of 460800.
+            systemCfg.zbRole = OPENTHREAD;
+            systemCfg.serialSpeed = 460800;  // The thread/rcp baud rate is 460800.
+            deviceTypeDetected = true;
+            LOGD("Detected device type: OPENTHREAD (thread/rcp), baud rate: 460800");
+        }
+        
+        if (!deviceTypeDetected)
+        {
+            // If the device type cannot be recognized, keep the current settings.
+            LOGW("Cannot detect device type from filename: %s, keeping current settings", filenameForExtraction.c_str());
+        }
+        
+        Serial2.updateBaudRate(systemCfg.serialSpeed);
+
+        // Attempt to extract firmware version information (the date in the last part) from the filename
+        // Use originalFilename instead of filePath because filePath is a fixed path /fw.hex
+        // const char *filenameForExtraction = (originalFilename && strlen(originalFilename) > 0) ? originalFilename : filePath;
+        String filePathStr = filenameForExtraction;
+        int lineIndex = filePathStr.lastIndexOf("_");
+        int binIndex = filePathStr.lastIndexOf(".bin");
+        int hexIndex = filePathStr.lastIndexOf(".hex");
+        int extIndex = (binIndex > hexIndex) ? binIndex : hexIndex;
+
+        if (lineIndex > -1 && extIndex > -1 && extIndex > lineIndex)
+        {
+            String zbFw = filePathStr.substring(lineIndex + 1, extIndex);
+            
+            // Verify that it is in date format (8-digit number, such as 20250403).
+            bool isValidDate = (zbFw.length() == 8);
+            if (isValidDate)
+            {
+                for (int i = 0; i < 8; i++)
+                {
+                    if (!isdigit(zbFw.charAt(i)))
+                    {
+                        isValidDate = false;
+                        break;
+                    }
+                }
+            }
+            
+            if (isValidDate)
+            {
+                strncpy(systemCfg.zbFw, zbFw.c_str(), sizeof(systemCfg.zbFw) - 1);
+                systemCfg.zbFw[sizeof(systemCfg.zbFw) - 1] = '\0';
+                LOGW("Extracted firmware version from filename: %s", systemCfg.zbFw);
+            }
+            else
+            {
+                // If not in date format, version is empty.
+                systemCfg.zbFw[0] = '\0';
+                LOGW("No valid date found in filename, version set to empty");
+            }
+        }
+        else
+        {
+            // If it cannot be extracted from the filename, the version will be empty.
+            systemCfg.zbFw[0] = '\0';
+            LOGW("Cannot extract version from filename, version set to empty");
+        }
+
+        // Save configuration (including device type and baud rate).
+        // systemCfg.zbSaveinfo = false;
+        saveSystemConfig(systemCfg);
+
+        // if (systemCfg.zbRole == COORDINATOR)
+        // {
+        //     zbFwCheck();
+        // }
+        sendEvent(tagZB_FW_file, eventLen, String(systemCfg.zbFw));
+        
+        // Delete firmware files to free up file system space
+        if (LittleFS.exists(filePath))
+        {
+            if (LittleFS.remove(filePath))
+            {
+                LOGD("Firmware file deleted: %s", filePath);
+                printLogMsg("Firmware file deleted");
+            }
+            else
+            {
+                LOGW("Failed to delete firmware file: %s", filePath);
+            }
+        }
+        
+        delay(500);
+        restartDevice();
+    }
+    else
+    {
+        Serial2.updateBaudRate(systemCfg.serialSpeed);
+        printLogMsg("Failed to flash Zigbee");
+        
+        // Send error event
+        sendEvent(tagZB_FW_err, eventLen, String("Failed!"));
+        
+        // Delete files if the upgrade fails to avoid wasting space.
+        if (LittleFS.exists(filePath))
+        {
+            if (LittleFS.remove(filePath))
+            {
+                LOGD("Firmware file deleted after failure: %s", filePath);
+            }
+        }
+        
+        // Immediately address the web server issue to ensure events are sent to the front end.
+        webServerHandleClient();
+        delay(100);
+        webServerHandleClient();
+    }
+    ledControl.modeLED.mode = LED_OFF;
+    vars.zbFlashing = false;
+    if (mqttCfg.enable && !vars.mqttConn)
+    {
+        connectToMqtt();
+    }
+}

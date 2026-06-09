@@ -193,6 +193,7 @@ void ledModeSetup()
     ledControl.modeLED.name = "Mode";
     ledControl.modeLED.pin = hwConfig.mist.ledModePin;
     ledControl.modeLED.active = true;
+    ledControl.modeLED.active_low = hwConfig.mist.ledModePlr == 0;
     ledControl.modeLED.mode = LED_OFF;
 
     LOGD("%d", ledControl.modeLED.mode);
@@ -208,6 +209,7 @@ void ledPwrSetup()
     ledControl.powerLED.name = "Power";
     ledControl.powerLED.pin = hwConfig.mist.ledPwrPin;
     ledControl.powerLED.active = true;
+    ledControl.powerLED.active_low = hwConfig.mist.ledPwrPlr == 0;
     ledControl.powerLED.mode = LED_OFF;
 
     LOGD("%d", ledControl.powerLED.mode);

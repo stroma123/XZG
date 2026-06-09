@@ -38,7 +38,7 @@
 #define NEED_BSL_LEVEL 1 // 0-ERROR 1-LOW 2-HIGH
 
 const int16_t overseerInterval = 5; // check lan or wifi connection every 5sec
-const uint8_t overseerMaxRetry = 3;        // 5x12 = 60sec delay for AP start
+const uint8_t overseerMaxRetry = 12;        // 5x12 = 60sec delay for AP start
 
 enum WORK_MODE_t : uint8_t
 {
@@ -121,6 +121,7 @@ struct SysVarsStruct
   float temp1w = 0;
 
   bool needFsDownload = false;
+  bool espFlashing = false;
 };
 
 // Network configuration structure
@@ -238,7 +239,11 @@ struct SystemConfigStruct
   WORK_MODE_t workMode;
 
   ZB_ROLE_t zbRole;
-  char zbFw[30];
+  bool zbSaveinfo;
+  char zbFw[32];
+  char zbHw[32];
+  char zbIeee[32];
+  uint32_t zbFlashSize;
 
   char updCheckTime[6];
   char updCheckDay[3];
@@ -393,13 +398,13 @@ struct LEDSettings
   int pin = -1;
   LEDMode mode;
   bool active;
+  bool active_low = false;
 };
 
 struct LEDControl
 {
   LEDSettings modeLED;
   LEDSettings powerLED;
-  LEDSettings statusLED;
 };
 
 enum usbMode : uint8_t

@@ -105,10 +105,15 @@ const char *mqttReconnectTimeKey = "mqttReconnectTime";
 const char *mqttHeartbeatTimeKey = "mqttHeartbeatTime";
 // const char *zbLedStateKey = "zbLedState";
 const char *zbFlashingKey = "zbFlashing";
+const char *espFlashingKey = "espFlashing";
 const char *deviceIdKey = "deviceId";
 const char *timeZoneNameKey = "timeZoneName";
 const char *zbRoleKey = "zbRole";
+const char *zbSaveinfoKey = "zbsaveinfo";
 const char *zbFwKey = "zbFw";
+const char *zbHwKey = "zbHw";
+const char *zbIeeeKey = "zbIeee";
+const char *zbFlashSizeKey = "zbFlashSize";
 const char *rcpUpdAvailKey = "rcpUpdAvail";
 const char *espUpdAvailKey = "espUpdAvail";
 

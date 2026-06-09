@@ -976,6 +976,34 @@ void hnBegin()
 }
 */
 
+// previous "default" behavior .ledXXXPlr was not really used
+// .ledXXXPlr = 0 means polarity is not inverted
+#define LED_ON_STATE HIGH
+#define LED_OFF_STATE LOW
+
+static inline int get_led(LEDSettings * led)
+{
+  if (digitalRead(led->pin) == LOW)
+  {
+    return led->active_low ? LED_ON_STATE : LED_OFF_STATE;
+  }
+  return led->active_low ? LED_OFF_STATE : LED_ON_STATE;
+}
+
+static inline void set_led(LEDSettings * led, int state)
+{
+  if (state == LED_OFF_STATE)
+  {
+    // we need LED to be OFF so return inactive state
+    digitalWrite(led->pin, led->active_low ? HIGH : LOW);
+  }
+  else {
+    // LED ON
+    digitalWrite(led->pin, led->active_low ? LOW : HIGH);
+
+  }
+}
+
 void ledTask(void *parameter)
 {
   LEDSettings *led = (LEDSettings *)parameter;
@@ -989,7 +1017,7 @@ void ledTask(void *parameter)
       continue;
     if (!led->active)
     {
-      digitalWrite(led->pin, LOW);
+      set_led(led, LED_OFF_STATE);
       vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(500));
       continue;
     }
@@ -998,23 +1026,23 @@ void ledTask(void *parameter)
     {
     case LED_OFF:
       previousMode = led->mode;
-      digitalWrite(led->pin, LOW);
+      set_led(led, LED_OFF_STATE);
       vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(500));
       break;
     case LED_ON:
       previousMode = led->mode;
-      digitalWrite(led->pin, HIGH);
+      set_led(led, LED_ON_STATE);
       vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(500));
       break;
     case LED_TOGGLE:
-      if (digitalRead(led->pin) == LOW)
+      if (get_led(led) == LED_OFF_STATE)
       {
-        digitalWrite(led->pin, HIGH);
+        set_led(led, LED_ON_STATE);
         led->mode = LED_ON;
       }
       else
       {
-        digitalWrite(led->pin, LOW);
+        set_led(led, LED_OFF_STATE);
         led->mode = LED_OFF;
       }
       vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(500));
@@ -1022,26 +1050,26 @@ void ledTask(void *parameter)
     case LED_BLINK_5T:
       for (int j = 0; j < 5; j++)
       {
-        digitalWrite(led->pin, HIGH);
+        set_led(led, LED_ON_STATE);
         vTaskDelay(pdMS_TO_TICKS(500));
-        digitalWrite(led->pin, LOW);
+        set_led(led, LED_OFF_STATE);
         vTaskDelay(pdMS_TO_TICKS(500));
       }
       led->mode = static_cast<LEDMode>(previousMode);
       break;
     case LED_BLINK_1T:
-      digitalWrite(led->pin, HIGH);
+      set_led(led, LED_ON_STATE);
       vTaskDelay(pdMS_TO_TICKS(500));
-      digitalWrite(led->pin, LOW);
+      set_led(led, LED_OFF_STATE);
       vTaskDelay(pdMS_TO_TICKS(500));
       led->mode = static_cast<LEDMode>(previousMode);
       break;
     case LED_BLINK_1Hz:
     case LED_FLASH_1Hz:
       previousMode = led->mode;
-      digitalWrite(led->pin, (led->mode == LED_BLINK_1Hz) ? HIGH : LOW);
+      (led->mode == LED_BLINK_1Hz) ? set_led(led, LED_ON_STATE) : set_led(led, LED_OFF_STATE);
       vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(800));
-      digitalWrite(led->pin, (led->mode == LED_BLINK_1Hz) ? LOW : HIGH);
+      (led->mode == LED_BLINK_1Hz) ? set_led(led, LED_OFF_STATE) : set_led(led, LED_ON_STATE);
       vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(200));
       break;
     case LED_BLINK_3Hz:
@@ -1049,9 +1077,9 @@ void ledTask(void *parameter)
       previousMode = led->mode;
       for (int j = 0; j < 3; j++)
       {
-        digitalWrite(led->pin, (led->mode == LED_BLINK_3Hz) ? HIGH : LOW);
+        (led->mode == LED_BLINK_3Hz) ? set_led(led, LED_ON_STATE) : set_led(led, LED_OFF_STATE);
         vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(267));
-        digitalWrite(led->pin, (led->mode == LED_BLINK_3Hz) ? LOW : HIGH);
+        (led->mode == LED_BLINK_3Hz) ? set_led(led, LED_OFF_STATE) : set_led(led, LED_ON_STATE);
         vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(100));
       }
       break;

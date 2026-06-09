@@ -106,6 +106,8 @@ bool wifiWebSetupInProgress = false;
 
 bool eventOK = false;
 
+static uint32_t last_percent = 0;
+
 // API strings
 const char *argAction = "action";
 const char *argPage = "page";
@@ -315,6 +317,8 @@ serverWeb.on("/js/jquery-min.js", []()
                  { sendGzipFromFS("/js/bootstrap.bundle.min.js.gz", contTypeTextJs); });
     serverWeb.on("/js/masonry.js", []()
                  { sendGzipFromFS("/js/masonry.js.gz", contTypeTextJs); });
+    serverWeb.on("/js/marked.min.js", []()
+                { sendGzipFromFS("/js/marked.min.js.gz", contTypeTextJs); });
     serverWeb.on("/js/functions.js", []()
                  { sendGzipFromFS("/js/functions.js.gz", contTypeTextJs); });
     serverWeb.on("/js/jquery-min.js", []()
@@ -373,7 +377,7 @@ serverWeb.on("/js/jquery-min.js", []()
     /* ----- OTA | START -----*/
 
     serverWeb.on("/update", HTTP_POST, handleUpdateRequest, handleEspUpdateUpload);
-    // serverWeb.on("/updateZB", HTTP_POST, handleUpdateRequest, handleZbUpdateUpload);
+    serverWeb.on("/updateZB", HTTP_POST, handleUpdateRequest, handleZbUpdateUpload);
 
     /* ----- OTA | END -----*/
 
@@ -381,14 +385,14 @@ serverWeb.on("/js/jquery-min.js", []()
     constexpr size_t headerkeyssize = sizeof(headerkeys) / sizeof(char *);
     serverWeb.collectHeaders(headerkeys, headerkeyssize);
     serverWeb.begin();
-    LOGD("done");
+    LOGI("done");
 }
 
 // IPAddress apIP2(192, 168, 1, 1);
 
 bool captivePortal()
 {
-    if (vars.apStarted)
+    if ((vars.apStarted) && (!vars.connectedEther))
     {
         IPAddress ip;
         if (!ip.fromString(serverWeb.hostHeader()))
@@ -490,6 +494,8 @@ void handleEspUpdateUpload()
                 return;
             }
         }
+        vars.espFlashing = true;
+        last_percent = 0;
         Update.onProgress(progressFunc);
     }
     else if (upload.status == UPLOAD_FILE_WRITE)
@@ -520,12 +526,120 @@ void handleEspUpdateUpload()
             LOGD("Update error: ");
             Update.printError(Serial);
         }
+        vars.espFlashing = false;
     }
     else if (upload.status == UPLOAD_FILE_ABORTED)
     {
         serverWeb.send(HTTP_CODE_INTERNAL_SERVER_ERROR, contTypeText, "Aborted");
         Update.end();
         LOGD("Update aborted");
+        vars.espFlashing = false;
+    }
+}
+
+void handleZbUpdateUpload()
+{
+    if (!is_authenticated())
+    {
+        return;
+    }
+
+    HTTPUpload &upload = serverWeb.upload();
+    static File uploadFile;
+    static String filename;
+    
+    LOGD("upload.status: %d", upload.status);
+    
+    if (upload.status == UPLOAD_FILE_START)
+    {
+        // Close any previously opened files.
+        if (uploadFile)
+        {
+            uploadFile.close();
+            opened = false;
+        }
+        
+        filename = upload.filename.c_str();
+        LOGD("Upload Zigbee firmware from file %s size: %s", filename.c_str(), String(upload.totalSize).c_str());
+        
+        // Delete the old file (if it exists).
+        if (LittleFS.exists(tempFile))
+        {
+            LittleFS.remove(tempFile);
+        }
+        
+        // Open the file and write.
+        uploadFile = LittleFS.open(tempFile, FILE_WRITE);
+        if (!uploadFile)
+        {
+            LOGD("Failed to open file for writing: %s", tempFile);
+            serverWeb.send(HTTP_CODE_INTERNAL_SERVER_ERROR, contTypeText, "Failed to open file");
+            return;
+        }
+        opened = true;
+    }
+    else if (upload.status == UPLOAD_FILE_WRITE)
+    {
+        if (uploadFile)
+        {
+            size_t written = uploadFile.write(upload.buf, upload.currentSize);
+            if (written != upload.currentSize)
+            {
+                LOGD("Write failed. Written: %d, Expected: %d", written, upload.currentSize);
+            }
+        }
+    }
+    else if (upload.status == UPLOAD_FILE_END)
+    {
+        if (uploadFile)
+        {
+            uploadFile.close();
+            opened = false;
+            LOGD("File upload completed: %s, original filename: %s", tempFile, filename.c_str());
+            
+            // Successful response sent
+            serverWeb.send(HTTP_CODE_OK, contTypeText, "Upload OK. Starting flash...");
+            
+            // Save the original filename for chip model verification.
+            String originalFilename = filename;
+            
+            // Initiate firmware upgrade task, passing the original filename.
+            struct FlashParams {
+                const char *filePath;
+                char *originalFilename;
+            };
+            
+            FlashParams *params = new FlashParams;
+            params->filePath = tempFile;
+            params->originalFilename = strdup(originalFilename.c_str());
+            
+            xTaskCreate([](void *pvParameters) {
+                FlashParams *params = (FlashParams *)pvParameters;
+                flashZbFile(params->filePath, params->originalFilename);
+                free(params->originalFilename);
+                delete params;
+                vTaskDelete(NULL);
+            }, "flashZbFileTask", 8192, params, 1, NULL);
+        }
+        else
+        {
+            serverWeb.send(HTTP_CODE_INTERNAL_SERVER_ERROR, contTypeText, "Upload failed");
+            LOGD("Upload failed: file not opened");
+        }
+    }
+    else if (upload.status == UPLOAD_FILE_ABORTED)
+    {
+        if (uploadFile)
+        {
+            uploadFile.close();
+            opened = false;
+        }
+        if (LittleFS.exists(tempFile))
+        {
+            LittleFS.remove(tempFile);
+        }
+        serverWeb.send(HTTP_CODE_INTERNAL_SERVER_ERROR, contTypeText, "Upload aborted");
+        LOGD("Upload aborted");
     }
 }
 
@@ -551,17 +665,27 @@ void handleEvents()
     }
 }
 
+SemaphoreHandle_t sseMutex = xSemaphoreCreateMutex();
 void sendEvent(const char *event,
                const uint8_t evsz,
                const String data)
 {
-    if (eventsClient)
-    {
-        char evnmArr[10 + evsz];
-        snprintf(evnmArr, sizeof(evnmArr), "event: %s\n", event);
-        eventsClient.print(evnmArr);
-        eventsClient.print(String("data: ") + data + "\n\n");
+    if (!eventsClient) return;
+
+    if (xSemaphoreTake(sseMutex, portMAX_DELAY)) {
+
+        eventsClient.print("event: ");
+        eventsClient.print(event);
+        eventsClient.print("\n");
+
+        eventsClient.print("data: ");
+        eventsClient.print(data);
+        eventsClient.print("\n\n");
+
         eventsClient.flush();
+        // debug
+        //Serial.println("[SSE OUT] " + String(event) + " " + data);
+        xSemaphoreGive(sseMutex);
     }
 }
 
@@ -666,7 +790,6 @@ static void apiCmdZbCheckFirmware(String &result)
 {
     if (zbFwCheck())
     {
-        printLogMsg("[RCP] " + CCTool.chip.fwRev);
         serverWeb.send(HTTP_CODE_OK, contTypeText, result);
     }
     else
@@ -743,14 +866,33 @@ static void apiCmdZbFlash(String &result)
 {
     if (serverWeb.hasArg(argUrl))
     {
-        flashZbUrl(serverWeb.arg(argUrl));
+        /* flashing is slow, prevent web browser to send multiple requests */
+        if (!vars.zbFlashing)
+        {
+            serverWeb.send(HTTP_CODE_OK, contTypeText, result);
+
+            flashZbUrl(serverWeb.arg(argUrl));
+        }
+        else
+        {
+            serverWeb.send(HTTP_CODE_CONFLICT, contTypeText, result);
+        }
     }
     else
     {
         String link = fetchLatestZbFw();
         if (link)
         {
-            flashZbUrl(link);
+            if (!vars.zbFlashing)
+            {
+                serverWeb.send(HTTP_CODE_OK, contTypeText, result);
+
+                flashZbUrl(link);
+            }
+            else
+            {
+                serverWeb.send(HTTP_CODE_CONFLICT, contTypeText, result);
+            }
         }
         else
         {
@@ -1184,6 +1326,7 @@ void handleApi()
         apiGetLog,
         apiDelFile};
     constexpr int numFunctions = sizeof(apiFunctions) / sizeof(apiFunctions[0]);
+    //LOGI("API hit: URI=%s, args=%d", serverWeb.uri().c_str(), serverWeb.args());
     if (!is_authenticated())
     {
         redirectLogin(1);
@@ -1213,6 +1356,8 @@ void handleSaveParams()
 
 void printEachKeyValuePair(const String &jsonString)
 {
+//    if (vars.espFlashing) return; /* optionally don't send general WEB UI updates during ESP flashing */
+
     DynamicJsonDocument doc(1024);
     DeserializationError error = deserializeJson(doc, jsonString);
 
@@ -2119,10 +2264,15 @@ void progressFunc(unsigned int progress, unsigned int total)
 
     const uint8_t eventLen = 11;
 
-    float percent = ((float)progress / total) * 100.0;
+    uint32_t percent = (static_cast<uint64_t>(progress) * 100 * 100) / total;
 
-    sendEvent(tagESP_FW_prgs, eventLen, String(percent));
-    // printLogMsg(String(percent));
+    if (percent > 9950) percent = 10000;  /* just to allow progress bar UI to close itself */
+    if ((percent - last_percent) > 500 || percent < 50 || percent > 9800)
+    {
+        sendEvent(tagESP_FW_prgs, eventLen, String((float)percent/100.0));
+        // printLogMsg(String(percent));
+        last_percent = percent;
+    }
 
 #ifdef DEBUG
     if (int(percent) % 5 == 0)
@@ -2176,7 +2326,8 @@ void getEspUpdate(String esp_fw_url)
                 updateType = U_FLASH;
                 isSpiffsUpdate = false;
             }
-
+            vars.espFlashing = true;
+            last_percent = 0;
             Update.begin(totalLength, updateType);
             Update.onProgress(progressFunc);
             LOGI("File size: %s", String(totalLength).c_str());
@@ -2203,6 +2354,7 @@ void getEspUpdate(String esp_fw_url)
                     }
                 }
             }
+            vars.espFlashing = false;
         }
         else
         {
@@ -2223,6 +2375,7 @@ void runEspUpdateFirmware(uint8_t *data, size_t len)
     // only if currentLength == totalLength
     Update.end(true);
     LOGD("Update success. Rebooting...");
+    vars.espFlashing = false;
     // Restart ESP32 to see changes
     restartDevice();
 }

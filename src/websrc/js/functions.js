@@ -1339,7 +1339,7 @@ function espFlashGitWait(params) {
 			$('#bar').html(i18next.t('md.esp.fu.vgds', { ver: version }));
 		}
 		else {
-			$.get(apiLink + api.actions.API_CMD + "&cmd=" + api.commands.CMD_ESP_UPD_URL, function (data) { });
+			$.get(apiLink + api.actions.API_CMD + "&cmd=" + api.commands.CMD_ESP_UPD_URL + "&type=ota", function (data) { });
 			$('#bar').html(i18next.t('md.esp.fu.lgds'));
 		}
 		console.log("[git_flash] start");
@@ -1399,6 +1399,17 @@ function connectEvents() {
 		//console.log(e.data);
 		$('#zbFlshPgsTxt').html(i18next.t('md.esp.fu.prgs', { per: e.data }));
 		$("#zbFlshPrgs").css("width", e.data + '%');
+		$("#zbFlshPrgs").removeClass("progress-bar-animated");
+
+		if (Math.round(e.data) > 99) {
+			setTimeout(function () {
+				$('#zbFlshPgsTxt').html(i18next.t('md.esp.fu.ucr')).css("color", "green");
+
+				setTimeout(function () {
+					restartWait();
+				}, 1000);
+			}, 500);
+		}
 	}, false);
 
 	sourceEvents.addEventListener('zb.nv', function (e) {
@@ -1423,13 +1434,19 @@ function connectEvents() {
 
 		if (e.data == "finish") {
 			data = i18next.t('md.zg.fu.fn');
-			$(".progress").addClass(classHide);
+			//$(".progress").addClass(classHide);
 			$(modalBody).css("color", "green");
-			setTimeout(() => {
-				$(modalBtns).html("");
-				modalAddClose();
+			// setTimeout(() => {
+			// 	$(modalBtns).html("");
+			// 	modalAddClose();
 
-			}, 1000);
+			// }, 1000);
+		}
+
+		if (e.data == "error") {
+			// Error status: Hide the progress bar and wait for the zb.fe event to display the specific error information.
+			$(".progress").addClass(classHide);
+			$("#zbFlshPgsTxt").html(i18next.t('md.esp.fu.wdm'));
 		}
 
 		$("#zbFlshPgsTxt").html(data);
@@ -1438,6 +1455,7 @@ function connectEvents() {
 
 	sourceEvents.addEventListener('zb.ff', function (e) {
 		let fileName = fileFromUrl(e.data);
+		let data;
 		if (fileName) {
 			data = i18next.t('md.zg.fu.f', { file: fileName });
 		}
@@ -1447,20 +1465,37 @@ function connectEvents() {
 				ver = e.data;
 			}
 			data = i18next.t('md.zg.fu.nv', { ver: ver });
-			setTimeout(function () {
-				//espReboot();
-				restartWait();
-			}, 1250);
+			// setTimeout(function () {
+			// 	//espReboot();
+			// 	restartWait();
+			// }, 1250);
 		}
 		$("#zbFlshPgsTxt").html(data);
 	}, false);
 
 	sourceEvents.addEventListener('zb.fe', function (e) {
-		const data = e.data.replaceAll("`", "<br>");
+		let data = e.data.replaceAll("`", "<br>");
+		console.log("zb.fe event received:", data);
+		
+		// Check if it's a chip model mismatch error.
+		if (data.indexOf("Chip model mismatch") >= 0 || data.indexOf("Chip model mismatch") >= 0) {
+			// Try parsing the error message
+			let currentMatch = data.match(/Current[=:]\s*([^,]+)/i);
+			let firmwareMatch = data.match(/Firmware[=:]\s*([^,)]+)/i);
+			
+			if (currentMatch && firmwareMatch) {
+				let currentChip = currentMatch[1].trim();
+				let firmwareChip = firmwareMatch[1].trim();
+				data = i18next.t('md.zg.fu.cmm', { current: currentChip, firmware: firmwareChip });
+			}
+		}
+		
+		// Stop waiting and display error message.
 		$(modalBtns).html("");
 		$("#zbFlshPgsTxt").html(data);
 		$(".progress").addClass(classHide);
-		$(modalBody).html(e.data).css("color", "red");
+		$("#zbFlshPrgs").removeClass("progress-bar-animated");
+		$(modalBody).html(data).css("color", "red");
 		modalAddClose();
 	}, false);
 
@@ -1470,6 +1505,13 @@ function connectEvents() {
 		$('#prg').css('width', e.data + '%');
 		$('#bar').html(i18next.t('md.esp.fu.prgs', { per: e.data }));
 		$("#prg").removeClass("progress-bar-animated");
+
+		let val = Number(e.data);
+
+		if (!Number.isFinite(val)) {
+			console.error("INVALID PROGRESS VALUE:", e.data);
+			return;
+		}
 
 		if (Math.round(e.data) > 99) {
 			setTimeout(function () {
@@ -1865,6 +1907,62 @@ function modalConstructor(type, params) {
 					} else if (action == 3) {
 						espFlashGitWait();
 					}
+				}
+			}).appendTo(modalBtns);
+			break;
+		case "flashZBFile":
+			$.get(apiLink + api.actions.API_CMD + "&cmd=" + api.commands.CMD_DNS_CHECK);
+			$(headerText).text(i18next.t('md.zb.ot')).css("color", "red");
+			$(modalBody).html(i18next.t("md.esp.fu.lfm"));
+			$("<div>", {
+				text: i18next.t("md.esp.fu.wm"),
+				class: "my-1 text-sm-center text-danger"
+			}).appendTo(modalBody);
+
+			modalAddCancel();
+			$('<button>', {
+				type: "button",
+				"class": "btn btn-primary",
+				text: i18next.t('c.sure'),
+				title: i18next.t("md.esp.fu.wm"),
+				click: function () {
+					$(modalBtns).html("");
+					modalAddSpiner();
+					$(modalBody).html("");
+					$("<div>", {
+						id: "zbFlshPgsTxt",
+						text: i18next.t("md.esp.fu.wdm"),
+						class: "mb-2 text-sm-center"
+					}).appendTo(modalBody);
+					$("<div>", {
+						"class": "progress",
+						append: $("<div>", {
+							"class": "progress-bar progress-bar-striped progress-bar-animated",
+							id: "zbFlshPrgs",
+							style: "width: 100%; background-color: var(--link-color);"
+						})
+					}).appendTo(modalBody);
+					reconnectEvents();
+					$.ajax({
+						url: "/updateZB",
+						type: "POST",
+						data: params,
+						contentType: false,
+						processData: false,
+						xhr: function () {
+							return new window.XMLHttpRequest();
+						},
+						success: function (data, textStatus, jqXHR) {
+							console.log("Upload success!");
+						},
+						error: function (jqXHR, textStatus, errorThrown) {
+							console.log("Upload error:", errorThrown);
+							$("#zbFlshPgsTxt").html("Upload failed: " + errorThrown).css("color", "red");
+							$(".progress").addClass(classHide);
+							$(modalBtns).html("");
+							modalAddClose();
+						}
+					});
 				}
 			}).appendTo(modalBtns);
 			break;
@@ -2693,6 +2791,22 @@ function handleClicks() {
 		modalConstructor("flashZB");
 	});
 
+	// Load and display the current Zigbee chip model.
+	function loadZigbeeChipModel() {
+		$.get(apiLink + api.actions.API_GET_PARAM + "&param=zbHwVer", function (chipModel) {
+			if (chipModel && chipModel.length > 0) {
+				$("#zb-chip-model").text(chipModel);
+				$("#zb-chip-hint").show();
+			}
+		}).fail(function () {
+			// If the retrieval fails, a hidden message will appear.
+			$("#zb-chip-hint").hide();
+		});
+	}
+
+	// Get chip model when page loads
+	loadZigbeeChipModel();
+
 	$(document).on('submit', '#upload_form_zb', function (e) {
 		e.preventDefault();
 		var formData = new FormData(this);
@@ -2721,6 +2835,7 @@ function handleClicks() {
 				console.log("Error:", errorThrown);
 			}
 		});*/
+		modalConstructor("flashZBFile", formData);
 	});
 
 	var lastEscTime = 0;

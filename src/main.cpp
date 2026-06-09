@@ -200,7 +200,7 @@ void handleTmrNetworkOverseer()
           else
           {
             LOGD("WIFI counter overflow, AP mode already active");
-          }        
+          }
           connectWifi();
           networkOverseerCounter = 0; // reset the counter
         }
@@ -237,7 +237,7 @@ void handleTmrNetworkOverseer()
         else
         {
           LOGD("LAN counter overflow, AP mode already active");
-        }        
+        }
       }
     }
   }
@@ -308,11 +308,6 @@ void NetworkEvent(WiFiEvent_t event)
       connectToMqtt();
     }
     
-    if(systemCfg.workMode == WORK_MODE_NETWORK)
-    {
-      ledControl.statusLED.mode = LED_OFF;
-      ledControl.powerLED.mode = LED_BLINK_1Hz;
-    }
     // checkDNS(true);
     //  ConfigSettings.disconnectEthTime = 0;
     break;
@@ -366,11 +361,6 @@ void NetworkEvent(WiFiEvent_t event)
       connectToMqtt();
     }
     
-    if(systemCfg.workMode == WORK_MODE_NETWORK)
-    {
-      ledControl.statusLED.mode = LED_OFF;
-      ledControl.powerLED.mode = LED_BLINK_1Hz;
-    }
     /*result5 = esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
     if (result5 == ESP_OK)
     {
@@ -401,11 +391,11 @@ void NetworkEvent(WiFiEvent_t event)
     connectedWifi = false;
     
     // If WiFi is enabled, attempt to reconnect immediately (without waiting for the timer).
-    if (networkCfg.wifiEnable && !vars.zbFlashing)
+    if (networkCfg.wifiEnable && !vars.zbFlashing && !vars.apStarted)
     {
       LOGD("WiFi disconnected, attempting immediate reconnect");
       //Reset the counter to retry immediately
-      networkOverseerCounter = 0;
+//      networkOverseerCounter = 0;
       // Try reconnecting after a short delay to avoid potential problems with immediate reconnection.
       delay(100);
       connectWifi();
@@ -417,14 +407,6 @@ void NetworkEvent(WiFiEvent_t event)
       // tmrNetworkOverseer.start();
       tmrNetworkOverseer.attach(overseerInterval, handleTmrNetworkOverseer);
     }
-    if(systemCfg.workMode == WORK_MODE_NETWORK)
-    {
-      if((connectedWifi == false) && (vars.connectedEther == false))
-      {
-        ledControl.powerLED.mode = LED_OFF;
-        ledControl.statusLED.mode = LED_ON;
-      }
-    }
     break;
   default:
     break;
@@ -433,8 +415,8 @@ void NetworkEvent(WiFiEvent_t event)
 
 void startAP(const bool start)
 {
-  String tag = "sAP";
-  LOGD("begin cmd=%d, state=%d", start, vars.apStarted);
+  // String tag = "sAP";
+  LOGD("start=%d, apStarted=%d", start, vars.apStarted);
 
   if (vars.apStarted)
   {
@@ -919,7 +901,23 @@ void setup()
     int BSL_PIN_MODE = 0;
     if (CCTool.begin(hwConfig.zb.rstPin, hwConfig.zb.bslPin, BSL_PIN_MODE))
     {
-      zbHwCheck();
+      if((!systemCfg.zbSaveinfo) || (strlen(systemCfg.zbHw) < 6))
+      {
+        zbHwCheck();
+        strlcpy(systemCfg.zbHw, String(CCTool.chip.hwRev).c_str(), sizeof(systemCfg.zbHw));
+        strlcpy(systemCfg.zbIeee, String(CCTool.chip.ieee).c_str(), sizeof(systemCfg.zbIeee));
+        systemCfg.zbFlashSize = CCTool.chip.flashSize;
+        LOGI("[RCP] initial HW check: %s (zbSaveinfo=%s)", systemCfg.zbHw, systemCfg.zbSaveinfo ? "true" : "false");
+
+        saveHwConfig(hwConfig);
+      }
+      else
+      {
+        CCTool.chip.hwRev = systemCfg.zbHw;
+        CCTool.chip.ieee = systemCfg.zbIeee;
+        CCTool.chip.flashSize = systemCfg.zbFlashSize;
+        LOGI("[RCP] hwRev: %s restored from systemCfg", systemCfg.zbHw);
+      }
     }
   }
 
@@ -938,19 +936,37 @@ void setup()
 
   if (systemCfg.zbRole == COORDINATOR || systemCfg.zbRole == UNDEFINED)
   {
-    /*if (zbFwCheck())
+    if (systemCfg.zbRole == UNDEFINED)
     {
-      if (systemCfg.zbRole == UNDEFINED)
-      {
-        systemCfg.zbRole = COORDINATOR;
-        saveSystemConfig(systemCfg);
-      }
-    }*/
-    zbFwCheck();
+      systemCfg.zbRole = COORDINATOR;
+      // saveSystemConfig(systemCfg);
+    }
+  
+    if((!systemCfg.zbSaveinfo) || (strlen(systemCfg.zbFw) < 6))
+    {
+      zbFwCheck();
+      strlcpy(systemCfg.zbFw, String(CCTool.chip.fwRev).c_str(), sizeof(systemCfg.zbFw));
+      LOGI("[RCP] COORD initial FW check: %s (zbSaveinfo=%s)", systemCfg.zbFw, systemCfg.zbSaveinfo ? "true" : "false");
+      systemCfg.zbSaveinfo = true;
+      saveSystemConfig(systemCfg);
+    }
+    else
+    {
+      CCTool.chip.fwRev = atoi(systemCfg.zbFw);
+      LOGI("[RCP] COORD fwRev: %s restored from systemCfg.zbFw", systemCfg.zbFw);
+    }
+    // zbLedToggle();
     LOGI("[RCP] FW: %s", String(CCTool.chip.fwRev).c_str());
   }
   else
   {
+    if(systemCfg.zbRole == OPENTHREAD || systemCfg.zbRole == ROUTER)
+    {
+      CCTool.chip.fwRev = atoi(systemCfg.zbFw);
+      LOGI("[RCP] THR/ROU fwRev: %s restored from systemCfg.zbFw", systemCfg.zbFw);
+      systemCfg.zbSaveinfo = true;
+      saveSystemConfig(systemCfg);
+    }
     LOGI("[RCP] role: %s", String(systemCfg.zbRole).c_str());
   }
   LOGI("[ESP] FW: %s", String(VERSION).c_str());
@@ -1091,12 +1107,18 @@ void loop(void)
     {
       if (Serial2.available())
       {
-        Serial.write(Serial2.read());
+        while (Serial2.available())
+        { // read from Zigbee
+          Serial.write(Serial2.read());
+        }
         Serial.flush();
       }
       if (Serial.available())
       {
-        Serial2.write(Serial.read());
+        while (Serial.available())
+        {
+          Serial2.write(Serial.read());
+        }
         Serial2.flush();
       }
       return;
@@ -1197,14 +1219,17 @@ void loop(void)
             serial_bytes_read++;
         }
         // send to LAN
-        for (byte cln = 0; cln < MAX_SOCKET_CLIENTS; cln++)
+        if((serial_bytes_read > 0) && (serial_bytes_read < 0xff))
         {
-          if (client[cln])
-            client[cln].write(serial_buf, serial_bytes_read);
+          for (byte cln = 0; cln < MAX_SOCKET_CLIENTS; cln++)
+          {
+            if (client[cln])
+              client[cln].write(serial_buf, serial_bytes_read);
+          }
+          // print to web console
+          printSendSocket(serial_bytes_read, serial_buf);
+          serial_bytes_read = 0;
         }
-        // print to web console
-        printSendSocket(serial_bytes_read, serial_buf);
-        serial_bytes_read = 0;
       }
 
       /*if (mqttCfg.enable)

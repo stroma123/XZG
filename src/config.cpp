@@ -367,7 +367,11 @@ void saveSystemConfig(const SystemConfigStruct &config)
     preferences.putInt(workModeKey, static_cast<int>(config.workMode));
 
     preferences.putInt(zbRoleKey, static_cast<int>(config.zbRole));
+    preferences.putBool(zbSaveinfoKey, config.zbSaveinfo);
     preferences.putString(zbFwKey, config.zbFw);
+    preferences.putString(zbHwKey, config.zbHw);
+    preferences.putString(zbIeeeKey, config.zbIeee);
+    preferences.putUInt(zbFlashSizeKey, config.zbFlashSize);
 
     preferences.putString(updCheckTimeKey, config.updCheckTime);
     preferences.putString(updCheckDayKey, config.updCheckDay);
@@ -407,7 +411,12 @@ void loadSystemConfig(SystemConfigStruct &config)
     config.workMode = static_cast<WORK_MODE_t>(preferences.getInt(workModeKey, WORK_MODE_NETWORK));
 
     config.zbRole = static_cast<ZB_ROLE_t>(preferences.getInt(zbRoleKey, UNDEFINED));
+
+    config.zbSaveinfo = preferences.getBool(zbSaveinfoKey, false);
     strlcpy(config.zbFw, preferences.getString(zbFwKey, "?").c_str(), sizeof(config.zbFw));
+    strlcpy(config.zbHw, preferences.getString(zbHwKey, "?").c_str(), sizeof(config.zbHw));
+    strlcpy(config.zbIeee, preferences.getString(zbIeeeKey, "?").c_str(), sizeof(config.zbIeee));
+    config.zbFlashSize = preferences.getUInt(zbFlashSizeKey, 0);
 
     strlcpy(config.updCheckTime, preferences.getString(updCheckTimeKey, UPD_CHK_TIME).c_str(), sizeof(config.updCheckTime));
     strlcpy(config.updCheckDay, preferences.getString(updCheckDayKey, UPD_CHK_DAY).c_str(), sizeof(config.updCheckDay));
@@ -962,7 +971,11 @@ void serializeSystemConfigToJson(const SystemConfigStruct &config, JsonObject ob
     obj[workModeKey] = static_cast<int>(config.workMode);
 
     obj[zbRoleKey] = static_cast<int>(config.zbRole);
+    obj[zbSaveinfoKey] = config.zbSaveinfo;
     obj[zbFwKey] = config.zbFw;
+    obj[zbHwKey] = config.zbHw;
+    obj[zbIeeeKey] = config.zbIeee;
+    obj[zbFlashSizeKey] = config.zbFlashSize;
 
     obj[updCheckTimeKey] = config.updCheckTime;
     obj[updCheckDayKey] = config.updCheckDay;
@@ -997,6 +1010,7 @@ void serializeSysVarsToJson(const SysVarsStruct &vars, JsonObject obj)
     obj[disableLedsKey] = vars.disableLeds;
     // obj[zbLedStateKey] = vars.zbLedState;
     obj[zbFlashingKey] = vars.zbFlashing;
+    obj[espFlashingKey] = vars.espFlashing;
 
     obj[deviceIdKey] = vars.deviceId;
 
