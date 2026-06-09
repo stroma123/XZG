@@ -1619,7 +1619,10 @@ void handleNetwork()
         doc[wifiEnblKey] = checked;
     }
     doc[wifiSsidKey] = String(networkCfg.wifiSsid);
-    doc[wifiPassKey] = String(networkCfg.wifiPass);
+    // Never send the stored password to the browser; send a masked placeholder
+    // when one is set. The save handler keeps the existing password if this
+    // placeholder is submitted back unchanged.
+    doc[wifiPassKey] = (strlen(networkCfg.wifiPass) > 0) ? wifiPassMask : "";
     if (networkCfg.wifiDhcp)
     {
         doc[wifiDhcpKey] = checked;

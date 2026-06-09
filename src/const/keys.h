@@ -6,6 +6,7 @@ extern const char *networkConfigKey;
 extern const char *wifiEnblKey;
 extern const char *wifiSsidKey;
 extern const char *wifiPassKey;
+extern const char *wifiPassMask;
 extern const char *wifiDhcpKey;
 extern const char *wifiIpKey;
 extern const char *wifiMaskKey;

@@ -185,31 +185,33 @@ void handleTmrNetworkOverseer()
     {
       if (!vars.zbFlashing)
       {
-        // More aggressive reconnection attempts: Try once every 3 checks (15 seconds) instead of waiting 60 seconds
-        if (networkOverseerCounter > 3)
+        if (!vars.apStarted)
         {
-          LOGD("WiFi not connected, attempting reconnect (attempt %d)", networkOverseerCounter / 3);
-          // Try reconnecting once every 3 checks
-          if (networkOverseerCounter % 3 == 0)
+          // No AP yet: try to (re)connect every 3 checks (15s), and raise the
+          // config AP once the retry budget is exhausted.
+          if (networkOverseerCounter > 3 && networkOverseerCounter % 3 == 0)
           {
+            LOGD("WiFi not connected, attempting reconnect (attempt %d)", networkOverseerCounter / 3);
             connectWifi();
           }
-        }
-        // If multiple reconnection attempts fail (exceeding the maximum number of retries), activate AP mode
-        if (networkOverseerCounter > overseerMaxRetry)
-        {
-          // If already in AP mode, no need to restart.
-          if (!vars.apStarted)
+          if (networkOverseerCounter > overseerMaxRetry)
           {
             LOGD("WIFI counter overflow, starting AP mode");
             startAP(true);
+            networkOverseerCounter = 0; // reset the counter
           }
-          else
+        }
+        else
+        {
+          // Config AP is up and must stay joinable. Probe for the configured
+          // network only occasionally (~30s) so STA scans don't keep knocking
+          // the softAP off its channel. On success the connected-branch above
+          // (and STA_GOT_IP) tears the AP back down.
+          if (networkOverseerCounter % 6 == 0)
           {
-            LOGD("WIFI counter overflow, AP mode already active");
+            LOGD("AP up, periodic STA probe");
+            connectWifi();
           }
-          connectWifi();
-          networkOverseerCounter = 0; // reset the counter
         }
       }
     }
@@ -456,6 +458,11 @@ void startAP(const bool start)
     LOGD("WIFI_AP_STA");
     WiFi.mode(WIFI_AP_STA); // WIFI_AP_STA for possible wifi scan in wifi mode
     WiFi.disconnect();
+    // Stop the STA from continuously hunting for the (absent) configured
+    // network: in AP+STA the single radio is forced onto the STA scan
+    // channel, which makes the softAP unjoinable. On-demand Web UI scans
+    // and the periodic probe in the overseer still work.
+    WiFi.setAutoReconnect(false);
     WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
     WiFi.softAP(vars.deviceId); //, WIFIPASS);
 
@@ -481,7 +488,10 @@ void stopWifi()
 void connectWifi()
 {
   static uint8_t timeout = 0;
-  if (WiFi.status() == WL_IDLE_STATUS && timeout < 20)
+  // Skip the "in progress" guard while the config AP is up: STA auto-reconnect
+  // is disabled there, so it sits idle (WL_IDLE_STATUS) and each periodic probe
+  // must be allowed through to actually call WiFi.begin().
+  if (!vars.apStarted && WiFi.status() == WL_IDLE_STATUS && timeout < 20)
   { // connection in progress
     LOGD("WL_IDLE_STATUS");
     timeout++;
@@ -529,16 +539,25 @@ void connectWifi()
   if ((strlen(networkCfg.wifiSsid) >= 2) && (strlen(networkCfg.wifiPass) >= 8))
   {
     LOGD("Ok SSID & PASS");
+    // Only switch radio mode when it actually differs - re-applying the same
+    // mode every cycle bounces the interfaces and disrupts the softAP.
+    wifi_mode_t currentMode = WiFi.getMode();
     if (vars.apStarted)
     {
-      LOGD("WiFi.mode(WIFI_AP_STA)");
-      WiFi.mode(WIFI_AP_STA);
+      if (currentMode != WIFI_AP_STA)
+      {
+        LOGD("WiFi.mode(WIFI_AP_STA)");
+        WiFi.mode(WIFI_AP_STA);
+      }
     }
     else
     {
       WiFi.setHostname(systemCfg.hostname);
-      LOGD("WiFi.mode(WIFI_STA)");
-      WiFi.mode(WIFI_STA);
+      if (currentMode != WIFI_STA)
+      {
+        LOGD("WiFi.mode(WIFI_STA)");
+        WiFi.mode(WIFI_STA);
+      }
     }
     delay(100);
 
@@ -557,7 +576,10 @@ void connectWifi()
     WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
     WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
 
-    WiFi.setAutoReconnect(true);
+    // Don't let the STA auto-retry in the background while the config AP is
+    // up - it keeps the radio scanning and makes the AP unjoinable. STA-only
+    // mode keeps auto-reconnect for normal operation.
+    WiFi.setAutoReconnect(!vars.apStarted);
 
     // Dont work on Arduino framework
     /*uint8_t wifiProtocols = WIFI_PROTOCOL_LR;

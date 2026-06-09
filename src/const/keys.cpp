@@ -4,6 +4,9 @@ const char *networkConfigKey = "network-config";
 const char *wifiEnblKey = "wifiEnbl";
 const char *wifiSsidKey = "wifiSsid";
 const char *wifiPassKey = "wifiPass";
+// Placeholder sent to the web UI instead of the real WiFi password; if it
+// comes back unchanged on save, the stored password is kept.
+const char *wifiPassMask = "********";
 const char *wifiDhcpKey = "wifiDhcp";
 const char *wifiIpKey = "wifiIp";
 const char *wifiMaskKey = "wifiMask";

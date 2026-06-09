@@ -599,7 +599,10 @@ void updateConfiguration(WebServer &serverWeb, SystemConfigStruct &configSys, Ne
                 configNet.wifiSsid[sizeof(configNet.wifiSsid) - 1] = '\0'; // Guarantee a null terminator at the end
             }
 
-            if (serverWeb.arg(wifiPassKey))
+            // Only overwrite the password when the user actually entered a new
+            // one. If the masked placeholder comes back unchanged, keep the
+            // existing stored password (configNet is the live networkCfg).
+            if (serverWeb.hasArg(wifiPassKey) && serverWeb.arg(wifiPassKey) != wifiPassMask)
             {
                 strncpy(configNet.wifiPass, serverWeb.arg(wifiPassKey).c_str(), sizeof(configNet.wifiPass) - 1);
                 configNet.wifiPass[sizeof(configNet.wifiPass) - 1] = '\0'; // Guarantee a null terminator at the end
@@ -885,7 +888,8 @@ void serializeNetworkConfigToJson(const NetworkConfigStruct &config, JsonObject 
 {
     obj[wifiEnblKey] = config.wifiEnable;
     obj[wifiSsidKey] = config.wifiSsid;
-    obj[wifiPassKey] = config.wifiPass;
+    // Mask the password so it is never exposed via the config export or logs.
+    obj[wifiPassKey] = (strlen(config.wifiPass) > 0) ? wifiPassMask : "";
     obj[wifiDhcpKey] = config.wifiDhcp;
     obj[wifiIpKey] = config.wifiIp.toString();
     obj[wifiMaskKey] = config.wifiMask.toString();
