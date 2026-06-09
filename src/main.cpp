@@ -166,6 +166,13 @@ void handleTmrNetworkOverseer()
     if (WiFi.isConnected())
     {
       LOGD("WIFI CONNECTED");
+      // STA is back up: tear down the fallback AP so we don't keep an open
+      // config AP running while connected to the trusted network.
+      if (vars.apStarted)
+      {
+        LOGD("STA reconnected, stopping fallback AP");
+        startAP(false);
+      }
       // Connection successful, stop monitor
       tmrNetworkOverseer.detach();
       networkOverseerCounter = 0; // reset the counter
@@ -353,6 +360,14 @@ void NetworkEvent(WiFiEvent_t event)
     // checkDNS(true);
     LOGD("WiFi TX %s", String(WiFi.getTxPower()).c_str());
     connectedWifi = true;
+
+    // STA (re)connected: immediately close the fallback config AP if it is up,
+    // so an open AP is never left running while we are on the trusted network.
+    if (vars.apStarted)
+    {
+      LOGD("STA got IP, stopping fallback AP");
+      startAP(false);
+    }
 
     // If MQTT is enabled but not connected, try connecting.
     if (mqttCfg.enable && !vars.mqttConn)
