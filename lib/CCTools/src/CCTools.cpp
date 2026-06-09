@@ -669,7 +669,7 @@ bool CCTools::begin(int CC_RST_PIN, int CC_BSL_PIN, int BSL_PIN_MODE)
     digitalWrite(_CC_RST_PIN, HIGH);
     pinMode(_CC_BSL_PIN, OUTPUT);
     digitalWrite(_CC_BSL_PIN, HIGH);
-
+#if 0
     enterBSL();
 
     //_cleanBuffer();
@@ -679,7 +679,7 @@ bool CCTools::begin(int CC_RST_PIN, int CC_BSL_PIN, int BSL_PIN_MODE)
         // DEBUG_PRINT("NO BEGIN ANSWER");
         return false;
     }
-
+#endif
     return true;
 }
 
