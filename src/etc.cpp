@@ -1196,7 +1196,8 @@ bool isValidIp(IPAddress ip)
 
 String getHostFromUrl(const String &url)
 {
-  int startIndex = url.indexOf("://") + 3;
+  int schemePos = url.indexOf("://");
+  int startIndex = (schemePos == -1) ? 0 : schemePos + 3; // no scheme -> host starts at 0
   int endIndex = url.indexOf('/', startIndex);
   if (endIndex == -1)
   {
