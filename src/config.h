@@ -284,6 +284,7 @@ void saveHwConfig(const ThisConfigStruct &config);
 void loadHwConfig(ThisConfigStruct &config);
 
 void writeDeviceId(SystemConfigStruct &sysConfig, VpnConfigStruct &vpnConfig, MqttConfigStruct &mqttConfig);
+void loadHostname(SystemConfigStruct &sysConfig);
 
 /* Previous firmware read config support. start */
 /*

@@ -439,6 +439,22 @@ void writeDeviceId(SystemConfigStruct &sysConfig, VpnConfigStruct &vpnConfig, Mq
     LOGD("Sysconfig hostname: %s", sysConfig.hostname);
 }
 
+// Load only the persisted hostname (no deviceId-derived default) early in
+// boot, before the network starts, so connectWifi() and the ETH_START handler
+// apply it as the DHCP hostname. writeDeviceId() still runs after the network
+// is up to fill deviceId-based defaults, which need ETH.begin() for the
+// Ethernet MAC. If no hostname was saved, leaves the value untouched.
+void loadHostname(SystemConfigStruct &sysConfig)
+{
+    preferences.begin(systemConfigKey, true);
+    String host = preferences.getString(hostnameKey, "");
+    preferences.end();
+    if (host.length() > 0)
+    {
+        strlcpy(sysConfig.hostname, host.c_str(), sizeof(sysConfig.hostname));
+    }
+}
+
 /*
 enum API_PAGE_t : uint8_t
 {

@@ -895,6 +895,12 @@ void setup()
 
   vars.apStarted = false;
 
+  // Load the saved hostname before the network starts so connectWifi() and the
+  // ETH_START handler apply it as the DHCP hostname. writeDeviceId() below
+  // still fills the deviceId-derived defaults after the network is up (it
+  // needs ETH.begin() for the Ethernet MAC).
+  loadHostname(systemCfg);
+
   networkStart();
 
   writeDefaultDeviceId(vars.deviceId, networkCfg.ethEnable); // need for mqtt, vpn, mdns, wifi ap and so on
