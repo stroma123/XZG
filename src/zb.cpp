@@ -5,7 +5,6 @@
 #include <LittleFS.h>
 #include <ETH.h>
 #include <HTTPClient.h>
-
 // #include <WiFiClientSecure.h>
 #include <esp_task_wdt.h>
 #include <CCTools.h>
@@ -363,6 +362,8 @@ static byte flashBuffer[CCTools::TRANSFER_SIZE];
 bool eraseWriteZbUrl(const char *url, std::function<void(float)> progressShow, CCTools &CCTool)
 {
     HTTPClient http;
+    //WiFiClientSecure client;
+   
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     // Optimize HTTPClient configuration to reduce memory usage.
     http.setTimeout(30000); // 30-second timeout
@@ -424,6 +425,7 @@ bool eraseWriteZbUrl(const char *url, std::function<void(float)> progressShow, C
             flashErased = true;
         }
 
+        //http.begin(client, url);
         http.begin(url);
         http.addHeader("Content-Type", "application/octet-stream");
 

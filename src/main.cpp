@@ -1,6 +1,6 @@
 #include <WiFi.h>
 // #include <WiFiClient.h>
-// #include <WiFiClientSecure.h>
+//#include <WiFiClientSecure.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <FS.h>
@@ -144,6 +144,39 @@ void startServers(bool usb = false)
   */
 }
 
+static bool firstUpdCheckPending = false;
+static unsigned long firstUpdCheckRequestTime = 0;
+
+static void startFirstUpdCheck()
+{
+  if (!vars.firstUpdCheck && !firstUpdCheckPending)
+  {
+    firstUpdCheckPending = true;
+    firstUpdCheckRequestTime = millis();
+  }
+}
+
+// HTTPS update checks need valid time. Wait for NTP without blocking timers,
+// and run the check from loop() so LittleFS is not used concurrently with the web server.
+static void handleFirstUpdCheck()
+{
+  if (!firstUpdCheckPending)
+  {
+    return;
+  }
+  const time_t targetTime = 946684800; // 01.01.2000
+  const unsigned long maxWaitMs = 300000;
+  if (time(nullptr) < targetTime && (millis() - firstUpdCheckRequestTime) < maxWaitMs)
+  {
+    return;
+  }
+  firstUpdCheckPending = false;
+  if (!vars.firstUpdCheck)
+  {
+    firstUpdCheck();
+  }
+}
+
 void handleTmrNetworkOverseer()
 {
   // switch (systemCfg.workMode)
@@ -176,10 +209,7 @@ void handleTmrNetworkOverseer()
       // Connection successful, stop monitor
       tmrNetworkOverseer.detach();
       networkOverseerCounter = 0; // reset the counter
-      if (!vars.firstUpdCheck)
-      {
-        firstUpdCheck();
-      }
+      startFirstUpdCheck();
     }
     else
     {
@@ -227,10 +257,7 @@ void handleTmrNetworkOverseer()
       {
         startAP(false);
       }
-      if (!vars.firstUpdCheck)
-      {
-        firstUpdCheck();
-      }
+      startFirstUpdCheck();
     }
     else
     {
@@ -637,7 +664,11 @@ void connectWifi()
 
     WiFi.begin(networkCfg.wifiSsid, networkCfg.wifiPass);
     WiFi.setTxPower(networkCfg.wifiPower);
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    WiFi.enableIPv6();
+#else
     WiFi.enableIpV6();
+#endif
     // LOGD("WiFi TX %s", String(WiFi.getTxPower()).c_str());
 
     /*esp_err_t result = esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
@@ -1125,6 +1156,8 @@ void printSendSocket(size_t bytes_read, uint8_t serial_buf[BUFFER_SIZE])
 
 void loop(void)
 {
+  handleFirstUpdCheck();
+
   if (btnFlag && vars.hwBtnIs)
   {
     buttonLoop();

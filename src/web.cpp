@@ -2,7 +2,7 @@
 #include <ArduinoJson.h>
 #include <ETH.h>
 #include <HTTPClient.h>
-// #include <WiFiClientSecure.h>
+//#include <WiFiClientSecure.h>
 #include <LittleFS.h>
 #include <Update.h>
 #include <WebServer.h>
@@ -1142,6 +1142,10 @@ static void apiGetParam()
         {
             resp = makeJsonConfig(NULL, NULL, NULL, NULL, &vars);
         }
+        else if (serverWeb.arg(argParam) == "hw")
+        {
+            resp = makeJsonConfig(NULL, NULL, NULL, NULL, NULL, &hwConfig);
+        }
         else if (serverWeb.arg(argParam) == "root")
         {
             resp = getRootData();
@@ -2033,6 +2037,12 @@ static inline void getRootHwMisc(DynamicJsonDocument &doc, bool update)
 
     doc["VERSION"] = String(verArr);
 
+    #ifdef PLATFORM_NAME
+    doc["platform"] = String(PLATFORM_NAME);
+    #else
+    doc["platform"] = String("Unknown Platform");
+    #endif
+
     const char *operationalMode = "operationalMode";
     doc[operationalMode] = systemCfg.workMode;
 
@@ -2294,7 +2304,7 @@ void getEspUpdate(String esp_fw_url)
 
     // checkDNS();
     HTTPClient http;
-    // WiFiClientSecure client;
+    //WiFiClientSecure client;
     // client.setInsecure(); // the magic line, use with caution
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     // http.begin(client, esp_fw_url);
@@ -2302,6 +2312,7 @@ void getEspUpdate(String esp_fw_url)
     if (dnsLookup(esp_fw_url))
     {
         http.begin(esp_fw_url);
+        //http.begin(client, esp_fw_url);
         http.addHeader("Content-Type", "application/octet-stream");
 
         // Get file, just to check if each reachable
@@ -2390,8 +2401,11 @@ FirmwareInfo fetchLatestEspFw(String type)
     if (type == "fs" || type == "ota")
     {
         HTTPClient http;
+        //WiFiClientSecure client;
         http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
         http.begin(fw_update_release_manifest_url);
+        //http.begin(client, fw_update_release_manifest_url);
+
         int httpCode = http.GET();
 
         if (httpCode > 0)
@@ -2464,6 +2478,9 @@ String fetchLatestZbFw()
 {
     // checkDNS();
     HTTPClient http;
+    //WiFiClientSecure client;
+    //http.begin(client, zb_update_release_manifest_url);
+
     http.begin(zb_update_release_manifest_url);
     int httpCode = http.GET();
 
